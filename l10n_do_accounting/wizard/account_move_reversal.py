@@ -86,33 +86,6 @@ class AccountMoveReversal(models.TransientModel):
             AccountMoveReversal, self - l10n_do_recs
         )._compute_l10n_latam_manual_document_number()
 
-    @api.model
-    def default_get(self, fields):
-        res = super(AccountMoveReversal, self).default_get(fields)
-        move_ids = (
-            self.env["account.move"].browse(self.env.context["active_ids"])
-            if self.env.context.get("active_model") == "account.move"
-            else self.env["account.move"]
-        )
-        move_ids_use_document = move_ids.filtered(
-            lambda move: move.l10n_latam_use_documents
-            and move.company_id.country_code == "DO"
-        )
-
-        if len(move_ids_use_document) > 1:
-            raise UserError(
-                _(
-                    "You cannot create Credit Notes from multiple "
-                    "documents at a time."
-                )
-            )
-        if move_ids_use_document:
-            res["is_ecf_invoice"] = move_ids_use_document[
-                0
-            ].company_id.l10n_do_ecf_issuer
-
-        return res
-
     @api.onchange("refund_type")
     def onchange_refund_type(self):
         if self.refund_type != "full_refund":
@@ -136,3 +109,51 @@ class AccountMoveReversal(models.TransientModel):
                 l10n_do_ecf_modification_code=self.l10n_do_ecf_modification_code,
             ),
         ).reverse_moves()
+
+    @api.depends("move_ids", "journal_id")
+    def _compute_document_type(self):
+        self.l10n_latam_available_document_type_ids = False
+        self.l10n_latam_document_type_id = False
+        self.l10n_latam_use_documents = False
+        do_wizard = self.filtered(
+            lambda w: w.journal_id
+            and w.journal_id.l10n_latam_use_documents
+            and w.country_code == "DO"
+        )
+        for record in do_wizard:
+            if len(record.move_ids) > 1:
+                move_ids_use_document = record.move_ids._origin.filtered(
+                    lambda move: move.l10n_latam_use_documents
+                )
+                if move_ids_use_document:
+                    raise UserError(
+                        _(
+                            "You can only reverse documents with legal invoicing documents from Latin America "
+                            "one at a time.\nProblematic documents: %s"
+                        )
+                        % ", ".join(move_ids_use_document.mapped("name"))
+                    )
+            else:
+                record.write(
+                    {
+                        "l10n_latam_use_documents": record.journal_id.l10n_latam_use_documents,
+                        "is_ecf_invoice": record.company_id.l10n_do_ecf_issuer,
+                    }
+                )
+
+            if record.l10n_latam_use_documents:
+                refund = record.env["account.move"].new(
+                    {
+                        "move_type": record._reverse_type_map(
+                            record.move_ids.move_type
+                        ),
+                        "journal_id": record.journal_id.id,
+                        "partner_id": record.move_ids.partner_id.id,
+                        "company_id": record.move_ids.company_id.id,
+                    }
+                )
+                record.l10n_latam_document_type_id = refund.l10n_latam_document_type_id
+                record.l10n_latam_available_document_type_ids = (
+                    refund.l10n_latam_available_document_type_ids
+                )
+        super(AccountMoveReversal, self - do_wizard)._compute_document_type()
