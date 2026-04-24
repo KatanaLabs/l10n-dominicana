@@ -882,4 +882,5 @@ class AccountMove(models.Model):
         elif self._context.get("is_l10n_do_seq", False):
             return "never"
         else:
-            return super(AccountMove, self)._deduce_sequence_number_reset(name)
+            "never"
+        return super(AccountMove, self)._deduce_sequence_number_reset(name)
